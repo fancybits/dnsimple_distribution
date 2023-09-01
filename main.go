@@ -26,7 +26,7 @@ func main() {
 		poll     = fs.DurationLong("poll", 2*time.Second, "interval between checks")
 		timeout  = fs.DurationLong("timeout", 10*time.Minute, "timeout for check")
 		interval = fs.DurationLong("interval", time.Minute, "interval between checks")
-		domain   = fs.StringLong("domain", "u.channelsdvr.net", "domain to check")
+		domain   = fs.StringLong("domain", "", "domain to check")
 		token    = fs.StringLong("token", "", "dnsimple API Access Token")
 		_        = fs.StringLong("config", "", "config file (optional)")
 	)
