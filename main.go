@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -23,7 +24,7 @@ func main() {
 
 	var (
 		poll     = fs.DurationLong("poll", 2*time.Second, "interval between checks")
-		timeout  = fs.DurationLong("timeout", 5*time.Minute, "timeout for check")
+		timeout  = fs.DurationLong("timeout", 10*time.Minute, "timeout for check")
 		interval = fs.DurationLong("interval", time.Minute, "interval between checks")
 		domain   = fs.StringLong("domain", "u.channelsdvr.net", "domain to check")
 		token    = fs.StringLong("token", "", "dnsimple API Access Token")
@@ -51,6 +52,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	if *domain == "" {
+		fmt.Fprintf(os.Stderr, "error: domain is required\n")
+		os.Exit(1)
+	}
+
 	ctx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(nil)
 
@@ -61,15 +67,14 @@ func main() {
 	// Wait for a signal
 	go func() {
 		sig := <-c
-		cancel(fmt.Errorf("received signal %s", sig))
+		cancel(fmt.Errorf("received signal: %s", sig))
 	}()
 
 	tc := dnsimple.StaticTokenHTTPClient(ctx, *token)
-
-	// new client
+	tc.Timeout = time.Minute
 	client := dnsimple.NewClient(tc)
 
-	// get the current authenticated account (if you don't know who you are)
+	// get the current authenticated account
 	whoamiResponse, err := client.Identity.Whoami(ctx)
 	if err != nil {
 		fmt.Printf("Whoami() returned error: %v\n", err)
@@ -81,24 +86,31 @@ func main() {
 	accountID := strconv.FormatInt(whoamiResponse.Data.Account.ID, 10)
 
 	// Sleep until the next minute starts
-	delayBeforeCheck := time.Until(time.Now().Truncate(time.Minute).Add(time.Minute))
+	delay := time.Until(time.Now().Truncate(*interval).Add(*interval))
+	_ = logger.Log("msg", "Sleeping until next interval", "delay", delay)
 
-	time.Sleep(delayBeforeCheck)
-
-	ticker := time.NewTicker(*interval)
+	ticker := time.NewTicker(delay)
 	defer ticker.Stop()
+
+	// Reset the ticker after the first tick
+	updateTicker := sync.OnceFunc(func() { ticker.Reset(*interval) })
 
 	for {
 		select {
 		case <-ctx.Done():
+			_ = logger.Log("msg", "Shutting down", "err", context.Cause(ctx))
 			return
 		case <-ticker.C:
+			updateTicker()
+
 			go func() {
 				ctx, timeoutCancel := context.WithTimeoutCause(ctx, *timeout, fmt.Errorf("Timeout after %s", *timeout))
 				defer timeoutCancel()
 
 				c, err := check(ctx, client, accountID, *domain, *poll)
-				l := kitlog.With(logger, "at", c.StartAt, "duration", c.Duration, "checks", c.Checks, "deleted", c.Deleted)
+				l := kitlog.With(logger, "at", c.StartAt.Truncate(time.Second),
+					"duration", c.Duration.Truncate(time.Millisecond),
+					"checks", c.Checks, "deleted", c.Deleted)
 				if err != nil {
 					l = kitlog.With(l, "error", err)
 				}
@@ -120,7 +132,6 @@ func check(ctx context.Context, client *dnsimple.Client, accountID string, domai
 	var c DistributionCheck
 
 	start := time.Now()
-
 	c.StartAt = start
 	c.Hostname = fmt.Sprintf("_distribution_check_%s", start.Format("20060102150405"))
 	attrs := dnsimple.ZoneRecordAttributes{
@@ -134,12 +145,14 @@ func check(ctx context.Context, client *dnsimple.Client, accountID string, domai
 		return &c, err
 	}
 
+	recordID := record.Data.ID
+
 	// Record the duration of the check
 	defer func() {
 		c.Duration = time.Since(start)
 	}()
 
-	recordID := record.Data.ID
+	// Delete the record when we're done
 	defer func() {
 		_, err := client.Zones.DeleteRecord(context.Background(), accountID, domain, recordID)
 		c.Deleted = err == nil
