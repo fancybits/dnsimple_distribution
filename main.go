@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
-	"sync"
 	"syscall"
 	"time"
 
@@ -91,88 +90,32 @@ func main() {
 	delay := time.Until(time.Now().Truncate(*interval).Add(*interval))
 	_ = logger.Log("msg", "Sleeping until next interval", "delay", delay)
 
-	ticker := time.NewTicker(delay)
-	defer ticker.Stop()
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(delay):
+	}
 
-	// Reset the ticker after the first tick
-	updateTicker := sync.OnceFunc(func() { ticker.Reset(*interval) })
+	ch := Monitor(ctx, client, accountID, *domain, *interval, *poll, *timeout)
 
 	for {
 		select {
 		case <-ctx.Done():
-			_ = logger.Log("msg", "Shutting down", "err", context.Cause(ctx))
+			// Drain the queue if it's there
+			select {
+			case <-ch:
+			default:
+			}
 			return
-		case <-ticker.C:
-			updateTicker()
-
-			go func() {
-				ctx, timeoutCancel := context.WithTimeoutCause(ctx, *timeout, fmt.Errorf("Timeout after %s", *timeout))
-				defer timeoutCancel()
-
-				c, err := check(ctx, client, accountID, *domain, *poll)
-				l := kitlog.With(logger, "at", c.StartAt.Truncate(time.Second),
-					"duration", c.Duration.Truncate(time.Millisecond),
-					"checks", c.Checks, "deleted", c.Deleted)
-				if err != nil {
-					l = kitlog.With(l, "error", err)
-				}
-				_ = l.Log()
-			}()
-		}
-	}
-}
-
-type DistributionCheck struct {
-	StartAt  time.Time     `json:"start_at"`
-	Duration time.Duration `json:"duration"`
-	Checks   int           `json:"checks"`
-	Hostname string        `json:"hostname"`
-	Deleted  bool          `json:"deleted"`
-}
-
-func check(ctx context.Context, client *dnsimple.Client, accountID string, domain string, poll time.Duration) (*DistributionCheck, error) {
-	var c DistributionCheck
-
-	start := time.Now()
-	c.StartAt = start
-	c.Hostname = fmt.Sprintf("_distribution_check_%s", start.Format("20060102150405"))
-	attrs := dnsimple.ZoneRecordAttributes{
-		Type:    "TXT",
-		Name:    &c.Hostname,
-		Content: fmt.Sprintf("distribution-check: %s", start.Format(time.RFC3339)),
-	}
-
-	record, err := client.Zones.CreateRecord(ctx, accountID, domain, attrs)
-	if err != nil {
-		return &c, err
-	}
-
-	recordID := record.Data.ID
-
-	// Record the duration of the check
-	defer func() {
-		c.Duration = time.Since(start)
-	}()
-
-	// Delete the record when we're done
-	defer func() {
-		_, err := client.Zones.DeleteRecord(context.Background(), accountID, domain, recordID)
-		c.Deleted = err == nil
-	}()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return &c, context.Cause(ctx)
-		case <-time.After(poll):
-			c.Checks++
-			response, err := client.Zones.CheckZoneRecordDistribution(ctx, accountID, domain, recordID)
-			if err != nil {
-				return &c, err
+		case c := <-ch:
+			l := kitlog.With(logger, "at", c.StartAt.Truncate(time.Second),
+				"duration", c.Duration.Truncate(time.Millisecond),
+				"checks", c.Checks, "deleted", c.Deleted)
+			if c.Err != nil {
+				l = kitlog.With(l, "error", c.Err)
 			}
-			if response.Data.Distributed {
-				return &c, nil
-			}
+			_ = l.Log()
+
 		}
 	}
 }
