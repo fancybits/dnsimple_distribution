@@ -112,7 +112,7 @@ func main() {
 				"duration", c.Duration.Truncate(time.Millisecond),
 				"checks", c.Checks, "deleted", c.Deleted)
 			if c.Err != nil {
-				l = kitlog.With(l, "error", c.Err)
+				l = kitlog.With(l, "error", c.Err, "hostname", c.Hostname)
 			}
 			_ = l.Log()
 

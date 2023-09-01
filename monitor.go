@@ -13,6 +13,7 @@ type DistributionCheck struct {
 	Duration time.Duration `json:"duration"`
 	Checks   int           `json:"checks"`
 	Hostname string        `json:"hostname"`
+	Created  bool          `json:"created"`
 	Deleted  bool          `json:"deleted"`
 	Err      error         `json:"error"`
 }
@@ -71,6 +72,8 @@ func Check(ctx context.Context, client *dnsimple.Client, accountID string, domai
 	if err != nil {
 		return &c, err
 	}
+
+	c.Created = true
 
 	recordID := record.Data.ID
 
