@@ -49,11 +49,13 @@ func main() {
 
 	if *token == "" {
 		fmt.Fprintf(os.Stderr, "error: token is required\n")
+		fmt.Fprint(os.Stderr, ffhelp.Flags(fs))
 		os.Exit(1)
 	}
 
 	if *domain == "" {
 		fmt.Fprintf(os.Stderr, "error: domain is required\n")
+		fmt.Fprint(os.Stderr, ffhelp.Flags(fs))
 		os.Exit(1)
 	}
 
