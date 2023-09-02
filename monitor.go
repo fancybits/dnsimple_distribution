@@ -9,23 +9,24 @@ import (
 )
 
 type DistributionCheck struct {
-	StartAt  time.Time     `json:"start_at"`
-	Duration time.Duration `json:"duration"`
-	Checks   int           `json:"checks"`
-	Hostname string        `json:"hostname"`
-	Created  bool          `json:"created"`
-	Deleted  bool          `json:"deleted"`
-	Err      error         `json:"error"`
+	Timing   *Timing `json:"timing"`
+	Checks   int     `json:"checks"`
+	Hostname string  `json:"hostname"`
+	Created  bool    `json:"created"`
+	Deleted  bool    `json:"deleted"`
+	Err      error   `json:"error"`
+	Timings  struct {
+		Create *Timing `json:"create"`
+		Check  Timings `json:"check"`
+		Delete *Timing `json:"delete"`
+	} `json:"timings"`
 }
 
 type ErrTimeout struct {
 	Duration time.Duration
 }
 
-func (e *ErrTimeout) Error() string {
-	return fmt.Sprintf("Timeout after %s", e.Duration)
-}
-
+func (e *ErrTimeout) Error() string   { return fmt.Sprintf("Timeout after %s", e.Duration) }
 func (e *ErrTimeout) Timeout() bool   { return true }
 func (e *ErrTimeout) Temporary() bool { return true }
 
@@ -59,16 +60,19 @@ func Monitor(ctx context.Context, client *dnsimple.Client, accountID string, dom
 func Check(ctx context.Context, client *dnsimple.Client, accountID string, domain string, poll time.Duration) (*DistributionCheck, error) {
 	var c DistributionCheck
 
-	start := time.Now()
-	c.StartAt = start
-	c.Hostname = fmt.Sprintf("_distribution_check_%s", start.Format("20060102150405"))
+	c.Timing = NewTiming()
+	defer func() { c.Timing.Stop() }()
+
+	c.Hostname = fmt.Sprintf("_distribution_check_%s", c.Timing.StartAt.Format("20060102150405"))
 	attrs := dnsimple.ZoneRecordAttributes{
 		Type:    "TXT",
 		Name:    &c.Hostname,
-		Content: fmt.Sprintf("distribution-check: %s", start.Format(time.RFC3339)),
+		Content: fmt.Sprintf("distribution-check: %s", c.Timing.StartAt.Format(time.RFC3339)),
 	}
 
+	c.Timings.Create = NewTiming()
 	record, err := client.Zones.CreateRecord(ctx, accountID, domain, attrs)
+	c.Timings.Create.Stop()
 	if err != nil {
 		return &c, err
 	}
@@ -77,14 +81,11 @@ func Check(ctx context.Context, client *dnsimple.Client, accountID string, domai
 
 	recordID := record.Data.ID
 
-	// Record the duration of the check
-	defer func() {
-		c.Duration = time.Since(start)
-	}()
-
 	// Delete the record when we're done
 	defer func() {
-		_, err := client.Zones.DeleteRecord(context.Background(), accountID, domain, recordID)
+		c.Timings.Delete = NewTiming()
+		_, err := client.Zones.DeleteRecord(context.WithoutCancel(ctx), accountID, domain, recordID)
+		c.Timings.Delete.Stop()
 		c.Deleted = err == nil
 	}()
 
@@ -94,7 +95,9 @@ func Check(ctx context.Context, client *dnsimple.Client, accountID string, domai
 			return &c, context.Cause(ctx)
 		case <-time.After(poll):
 			c.Checks++
+			t := NewTiming()
 			response, err := client.Zones.CheckZoneRecordDistribution(ctx, accountID, domain, recordID)
+			c.Timings.Check = append(c.Timings.Check, t.Stop())
 			if err != nil {
 				return &c, err
 			}

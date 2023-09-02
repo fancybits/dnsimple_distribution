@@ -108,8 +108,10 @@ func main() {
 			}
 			return
 		case c := <-ch:
-			l := kitlog.With(logger, "at", c.StartAt.Truncate(time.Second),
-				"duration", c.Duration.Truncate(time.Millisecond),
+			l := kitlog.With(logger, "at", c.Timing.StartAt.Truncate(time.Second),
+				"duration", c.Timing.Duration.Truncate(time.Millisecond),
+				"create_duration", c.Timings.Create.Duration.Truncate(time.Millisecond),
+				"check_duration_median", c.Timings.Check.Median().Truncate(time.Millisecond),
 				"checks", c.Checks, "deleted", c.Deleted)
 			if c.Err != nil {
 				l = kitlog.With(l, "error", c.Err, "hostname", c.Hostname)
