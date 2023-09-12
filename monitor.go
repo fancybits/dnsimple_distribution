@@ -8,6 +8,8 @@ import (
 	"github.com/dnsimple/dnsimple-go/dnsimple"
 )
 
+var SlowPoll = 10 * time.Second
+
 type DistributionCheck struct {
 	Timing   *Timing `json:"timing"`
 	Checks   int     `json:"checks"`
@@ -103,6 +105,10 @@ func Check(ctx context.Context, client *dnsimple.Client, accountID string, domai
 			}
 			if response.Data.Distributed {
 				return &c, nil
+			}
+
+			if c.Checks == 10 && poll < SlowPoll {
+				poll = SlowPoll
 			}
 		}
 	}
